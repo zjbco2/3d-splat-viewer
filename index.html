@@ -86,6 +86,7 @@
     border-radius:4px; padding:3px 9px; font-size:12px; cursor:pointer;
   }
   .ctl button:hover, .bar .right button:hover{border-color:var(--accent); color:#fff}
+  .btn-ico{display:inline-flex; align-items:center; gap:5px}
 
   /* 右侧按钮组靠右对齐 */
   .bar .right{display:flex; gap:8px; margin-left:auto; flex:none; align-items:center}
@@ -199,7 +200,12 @@
     <div class="right">
       <button id="resetBg" title="清除壁纸，恢复纯底色">重置背景</button>
       <button id="autofit">重置视角</button>
-      <button id="link" title="复制纯展示页直链：只有模型，白底无 UI">复制直链</button>
+      <button id="shot" class="btn-ico" title="把当前画面存成 PNG（含底色 / 壁纸、网格、模型）">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4.6" width="12" height="8.8" rx="1.8"/><circle cx="8" cy="9.1" r="2.5"/><path d="M5.8 4.6l1-1.8h2.4l1 1.8"/></svg><span class="btn-label">截屏保存</span>
+      </button>
+      <button id="link" class="btn-ico" title="复制纯展示页直链：只有模型，白底无 UI">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.2 9.8a2.6 2.6 0 0 1 0-3.7l1.4-1.4a2.6 2.6 0 0 1 3.7 3.7l-.7.7"/><path d="M9.8 6.2a2.6 2.6 0 0 1 0 3.7L8.4 11.3a2.6 2.6 0 0 1-3.7-3.7l.7-.7"/></svg><span class="btn-label">复制直链</span>
+      </button>
     </div>
   </div>
 
@@ -213,8 +219,9 @@
 </main>
 
 <script type="module">
-import * as THREE from 'three';
-import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+import {
+  FIT_SIZE, HOME_POS, createViewer, fitMesh, createPanController
+} from './viewer-core.js';
 
 const listEl   = document.getElementById('list');
 const stageEl  = document.getElementById('stage');
@@ -230,10 +237,7 @@ const gridEl   = document.getElementById('grid');
    这里保持 0 即可。若哪天工作流去掉了那个节点，把这里改回 -90。 */
 /* 模型归一化后的目标直径，以及配套的工作相机位置。
    两个值要一起看：改 FIT_SIZE 就得改 HOME_POS 的距离，否则画面大小会跳。 */
-const YAW_DEG  = 0;
-const FIT_SIZE = 4.2;
-const HOME_POS = [7, -2.5, 0];
-const HOME_UP  = [0, -1, 0];
+const YAW_DEG = 0;   // 模型朝向补转；取景常量在 viewer-core.js，两页共用
 
 let viewer = null;
 let splatMesh = null;
@@ -243,51 +247,23 @@ let itemsCache = [];
 async function clearStage(){
   if (viewer) {
     const v = viewer;
+    const renderer = v.__renderer;
     viewer = null; splatMesh = null;
     try { await v.dispose(); } catch(e){}
+    // 外部传入的 renderer 库不会自己回收，必须手动释放，
+    // 否则每换一个模型就漏一个 WebGL 上下文（浏览器上限约 16 个，超了直接崩）。
+    if (renderer) {
+      try { renderer.dispose(); } catch(e){}
+      try { renderer.forceContextLoss(); } catch(e){}
+    }
   }
   stageEl.querySelectorAll('.host').forEach(n => n.remove());
   stageEl.querySelectorAll('.err').forEach(n => n.remove());
 }
 
-/**
- * 把模型包围盒中心移到原点，并把最长边缩放到 6 个单位。
- * 这样不管原始坐标偏移多少、尺度多大，都能落在默认视野内。
- */
-function fitMesh(mesh){
-  if (!mesh) return null;
-  // 先清零变换，否则第二次计算包围盒时用的是已经缩放过的大小，
-  // 会把 scale 重新设成接近 1，效果等于“没反应”甚至突然变大。
-  const keepY = mesh.rotation.y;
-  mesh.scale.setScalar(1);
-  mesh.position.set(0, 0, 0);
-  mesh.rotation.y = 0;
-  mesh.updateMatrixWorld(true);
 
-  let box;
-  try { box = mesh.computeBoundingBox(true); } catch(e){
-    mesh.rotation.y = keepY; return null;
-  }
-  if (!box || box.isEmpty()) { mesh.rotation.y = keepY; return null; }
 
-  const c  = box.getCenter(new THREE.Vector3());
-  const sz = box.getSize(new THREE.Vector3());
-  const maxDim = Math.max(sz.x, sz.y, sz.z);
-  if (!isFinite(maxDim) || maxDim <= 0) { mesh.rotation.y = keepY; return null; }
 
-  const s = FIT_SIZE / maxDim;
-  mesh.scale.setScalar(s);
-  mesh.position.set(-c.x * s, -c.y * s, -c.z * s);
-  mesh.rotation.y = keepY;
-  mesh.updateMatrixWorld(true);
-  return { center: c, size: sz, scale: s };
-}
-
-function applyYaw(){
-  if (!splatMesh) return;
-  splatMesh.rotation.y = YAW_DEG * Math.PI / 180;
-  splatMesh.updateMatrixWorld(true);
-}
 
 /**
  * 把相机拉回默认机位，让画面回到"正对模型、大小合适"的状态。
@@ -319,7 +295,7 @@ function resetCamera(){
 async function loadModel(item, el){
   if (current === item.name) return;
   current = item.name;
-  panX = 0; panY = 0;          // 换模型时位置偏移归零
+  pan.reset();                 // 换模型时位置偏移归零
 
   document.querySelectorAll('.item').forEach(x => x.classList.remove('on'));
   if (el) el.classList.add('on');
@@ -338,17 +314,9 @@ async function loadModel(item, el){
   stageEl.appendChild(host);
 
   try {
-    viewer = new GaussianSplats3D.Viewer({
-      rootElement: host,
+    viewer = createViewer(host, {
       cameraUp: upEl.value.split(',').map(Number),
-      // ComfyUI 的 Save Splat 视口相机在 +X 侧，跟着它走，两边看到的是同一个正面
-      initialCameraPosition: HOME_POS,
-      initialCameraLookAt: [0, 0, 0],
-      sharedMemoryForWorkers: false,
-      gpuAcceleratedSort: false,
-      useBuiltInControls: true,
-      showLoadingUI: false,
-      antialiased: false,
+      position: HOME_POS,
     });
 
     await viewer.addSplatScene('models/' + encodeURIComponent(item.name), {
@@ -360,12 +328,8 @@ async function loadModel(item, el){
     spin.remove();
 
     splatMesh = viewer.getSplatMesh();
-    const info = fitMesh(splatMesh);
-    applyViewOffset();          // 新相机要重新套上偏移
-    applyYaw();
-    statusEl.textContent = info
-      ? `已加载 · 原始尺度 ${info.size.x.toFixed(1)}×${info.size.y.toFixed(1)}×${info.size.z.toFixed(1)}`
-      : '已加载（包围盒为空，未能自动适配）';
+    fitMesh(splatMesh, YAW_DEG);
+    pan.apply();                // 新相机要重新套上偏移
 
   } catch (err) {
     console.error(err);
@@ -472,16 +436,12 @@ autofitBtn.addEventListener('click', () => {
     flashBtn('先选模型');
     return;
   }
-  const info = fitMesh(splatMesh);
-  applyYaw();
-  resetPan();                  // 画面偏移一起归零
+  const ok = fitMesh(splatMesh, YAW_DEG);
+  pan.reset();                 // 画面偏移一起归零
   const camOk = resetCamera();
-  if (info) {
-    statusEl.textContent =
-      `视角已复位 · 模型直径 ${FIT_SIZE}`;
+  if (ok) {
     flashBtn(camOk ? '✓ 已复位' : '模型已归位·视角未复位');
   } else {
-    statusEl.textContent = '包围盒为空，无法复位';
     flashBtn('复位失败');
   }
 });
@@ -519,89 +479,23 @@ wallFile.addEventListener('change', () => {
 });
 
 resetBgBtn.addEventListener('click', () => {
-  const had = !!wallpaperURL;
+  // 重置背景 = 清掉壁纸图 + 底色恢复默认白。两者都归位才算「重置」。
+  const bgChanged = bgEl.value.toLowerCase() !== '#ffffff';
+  const had = !!wallpaperURL || bgChanged;
   clearWallpaper();
-  resetBgBtn.textContent = had ? '已清除' : '没有壁纸';
+  stageEl.style.setProperty('--stage-bg', '#ffffff');
+  bgEl.value = '#ffffff';   // 同步颜色选择器，避免显示和实际不一致
+  resetBgBtn.textContent = had ? '已重置' : '已是默认';
   clearTimeout(resetBgBtn._t);
   resetBgBtn._t = setTimeout(() => { resetBgBtn.textContent = '重置背景'; }, 1200);
 });
 
 /* ---- 画面内平移 ----
-   控件库的旋转永远绕「画面中心那个点」转。所以平移如果去动相机，
-   模型就会绕着旁边那个空点画圈 —— 这正是之前的毛病。
-
-   做法：不移动相机、也不移动渲染层，只给相机设一个「取景偏移」
-   （camera.setViewOffset，相当于镜头平移，透视和朝向都不变）。
-   这样画面整体平移，模型看起来换了位置；
-   而相机和观察中心原地没动，旋转缩放仍然绕模型自己转；
-   画布也始终铺满可视区，不会出现「模型被画布边缘切成直角」的情况。 */
-stageEl.addEventListener('contextmenu', e => e.preventDefault());
-
-let panX = 0, panY = 0;
-let _panning = false;
-let _panLast  = null;
-
-function applyViewOffset() {
-  const cam = viewer && viewer.camera;
-  if (!cam || typeof cam.setViewOffset !== 'function') return;
-  const w = stageEl.clientWidth  || 1;
-  const h = stageEl.clientHeight || 1;
-
-  if (!panX && !panY) {
-    cam.clearViewOffset();                 // 内部会重算投影矩阵
-  } else {
-    // 取景框朝反方向挪，画面看起来就是往拖动方向走
-    cam.setViewOffset(w, h, -panX, -panY, w, h);
-  }
-  if (viewer && typeof viewer.forceRenderNextFrame === 'function') {
-    viewer.forceRenderNextFrame();
-  }
-}
-
-function resetPan() {
-  panX = 0; panY = 0;
-  applyViewOffset();
-}
-
-function applyPan(dxPx, dyPx) {
-  const w = stageEl.clientWidth  || 1;
-  const h = stageEl.clientHeight || 1;
-  // 留些余地，别让模型被拖出画面之后找不回来
-  panX = Math.max(-w * 0.8, Math.min(w * 0.8, panX + dxPx));
-  panY = Math.max(-h * 0.8, Math.min(h * 0.8, panY + dyPx));
-  applyViewOffset();
-}
-
-stageEl.addEventListener('pointerdown', e => {
-  const isPan = (e.button === 2) || (e.button === 0 && e.shiftKey);
-  if (!isPan || !viewer || !splatMesh) return;   // 还没选模型就不接管
-  e.preventDefault();
-  e.stopPropagation();                            // 别让 canvas 上的旋转同时生效
-  _panning = true;
-  _panLast = { x: e.clientX, y: e.clientY };
-  try { stageEl.setPointerCapture(e.pointerId); } catch (_) {}
-  stageEl.style.cursor = 'grabbing';
-}, true);                                         // ← 捕获阶段，抢在 canvas 前面
-
-stageEl.addEventListener('pointermove', e => {
-  if (!_panning) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const dx = e.clientX - _panLast.x;
-  const dy = e.clientY - _panLast.y;
-  _panLast = { x: e.clientX, y: e.clientY };
-  applyPan(dx, dy);
-}, true);
-
-function endPan(e) {
-  if (!_panning) return;
-  e.stopPropagation();
-  _panning = false;
-  _panLast = null;
-  stageEl.style.cursor = '';
-}
-stageEl.addEventListener('pointerup', endPan, true);
-stageEl.addEventListener('pointercancel', endPan, true);
+   逻辑收在 viewer-core.js 的 createPanController()，两个页面共用一份，
+   以后调平移只改那里，不会再出现「改了一边忘另一边」。
+   原理：相机和观察中心都不动，只给相机设「取景偏移」，
+   所以旋转缩放始终绕模型自己转，也不会有透视变形。 */
+const pan = createPanController(stageEl, () => viewer);
 
 /* ---- 折叠左侧面板 ---- */
 const foldBtn = document.getElementById('fold');
@@ -632,24 +526,116 @@ function buildShareQuery() {
   }
 
   // 画面偏移按「占画面宽高的百分比」传，换屏幕尺寸也能对上
-  if (panX || panY) {
-    const w = stageEl.clientWidth  || 1;
-    const h = stageEl.clientHeight || 1;
-    q.set('pan', `${(panX / w * 100).toFixed(1)},${(panY / h * 100).toFixed(1)}`);
-  }
+  const p = pan.getPercent();
+  if (p.x || p.y) q.set('pan', `${p.x.toFixed(1)},${p.y.toFixed(1)}`);
   return q;
 }
 
+/**
+ * 把画布区当前的样子合成为一张图。
+ *
+ * 画布区其实是几层叠出来的，WebGL 只画了「模型」那一层：
+ *   底色（CSS）→ 壁纸（CSS）→ 网格（CSS）→ 模型（WebGL canvas）
+ * 所以不能直接截 canvas，得按这个顺序往离屏画布上重画一遍。
+ */
+async function captureStage() {
+  const glCanvas = stageEl.querySelector('canvas');
+  if (!glCanvas) throw new Error('画布还没准备好');
+
+  const w = stageEl.clientWidth  || 1;
+  const h = stageEl.clientHeight || 1;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);   // 封顶 2，避免出超大图
+
+  const out = document.createElement('canvas');
+  out.width  = Math.round(w * dpr);
+  out.height = Math.round(h * dpr);
+  const ctx = out.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  // 1) 底色
+  ctx.fillStyle = bgEl.value;
+  ctx.fillRect(0, 0, w, h);
+
+  // 2) 壁纸，按 cover 铺满
+  if (wallpaperURL) {
+    const img = await new Promise((res, rej) => {
+      const im = new Image();
+      im.onload  = () => res(im);
+      im.onerror = () => rej(new Error('壁纸读取失败'));
+      im.src = wallpaperURL;
+    });
+    const s  = Math.max(w / img.width, h / img.height);
+    const dw = img.width * s, dh = img.height * s;
+    ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+
+  // 3) 网格，跟 CSS 一致：48px 一格、居中
+  if (gridEl.checked) {
+    const step = 48;
+    const ox = ((w / 2) % step + step) % step;
+    const oy = ((h / 2) % step + step) % step;
+    ctx.strokeStyle = 'rgba(0,0,0,.07)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = ox; x < w; x += step) { ctx.moveTo(x + .5, 0); ctx.lineTo(x + .5, h); }
+    for (let y = oy; y < h; y += step) { ctx.moveTo(0, y + .5); ctx.lineTo(w, y + .5); }
+    ctx.stroke();
+  }
+
+  // 4) 模型层
+  ctx.drawImage(glCanvas, 0, 0, w, h);
+
+  return out;
+}
+
+const shotBtn = document.getElementById('shot');
+const shotLabel = shotBtn.querySelector('.btn-label');
+const SHOT_LABEL = '截屏保存';
+
+function shotFlash(text) {
+  shotLabel.textContent = text;
+  clearTimeout(shotBtn._t);
+  shotBtn._t = setTimeout(() => { shotLabel.textContent = SHOT_LABEL; }, 1600);
+}
+
+shotBtn.addEventListener('click', async () => {
+  if (!splatMesh) { shotFlash('先选模型'); return; }
+
+  shotLabel.textContent = '保存中…';
+  try {
+    const canvas = await captureStage();
+    // 文件名带时间戳：同名模型连拍多次也不会互相覆盖
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+             + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const name = (current || 'splat').replace(/\.[^.]+$/, '');
+    canvas.toBlob(blob => {
+      if (!blob) { shotFlash('失败'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${name}_${ts}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      shotFlash('✓ 已保存');
+    }, 'image/png');
+  } catch (e) {
+    console.error('[splat-viewer] 截图失败', e);
+    shotFlash('失败');
+  }
+});
+
 /* 复制纯展示页（view.html）的直链，方便分享单个模型。 */
 const linkBtn = document.getElementById('link');
+const linkLabel = linkBtn.querySelector('.btn-label');
 const LINK_LABEL = '复制直链';
 
 linkBtn.addEventListener('click', async () => {
   if (!current) {
     statusEl.textContent = '先选一个模型';
-    linkBtn.textContent = '先选模型';
+    linkLabel.textContent = '先选模型';
     clearTimeout(linkBtn._t);
-    linkBtn._t = setTimeout(() => { linkBtn.textContent = LINK_LABEL; }, 1400);
+    linkBtn._t = setTimeout(() => { linkLabel.textContent = LINK_LABEL; }, 1400);
     return;
   }
   const url = new URL('view.html?' + buildShareQuery().toString(), location.href).href;
@@ -661,10 +647,10 @@ linkBtn.addEventListener('click', async () => {
     // 非 https 或浏览器拒绝时退化为手动复制
     window.prompt('复制这个链接：', url);
   }
-  linkBtn.textContent = ok ? '✓ 已复制' : '已弹出';
+  linkLabel.textContent = ok ? '✓ 已复制' : '已弹出';
   statusEl.textContent = url;
   clearTimeout(linkBtn._t);
-  linkBtn._t = setTimeout(() => { linkBtn.textContent = LINK_LABEL; }, 1600);
+  linkBtn._t = setTimeout(() => { linkLabel.textContent = LINK_LABEL; }, 1600);
 });
 
 gridEl.addEventListener('change', () => {
@@ -687,7 +673,7 @@ if (window.ResizeObserver) {
   let _roTimer = null;
   new ResizeObserver(() => {
     clearTimeout(_roTimer);
-    _roTimer = setTimeout(applyViewOffset, 60);
+    _roTimer = setTimeout(pan.apply, 60);
   }).observe(stageEl);
 }
 

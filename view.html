@@ -54,8 +54,9 @@
 <div id="stage"></div>
 
 <script type="module">
-import * as THREE from 'three';
-import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+import {
+  HOME_POS, createViewer, fitMesh, createPanController
+} from './viewer-core.js';
 
 /* ============================================================
  * 模型地址
@@ -64,11 +65,7 @@ import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
  * ============================================================ */
 const MODEL_BASE = 'models/';
 
-/* 与 index.html 保持一致的取景常量。
-   两个页面必须用同一套值，否则同一个模型在两处看起来大小、角度会不一样。
-   改 FIT_SIZE 就得同步改 HOME_POS 的距离。 */
-const FIT_SIZE = 4.2;
-const HOME_POS = [7, -2.5, 0];
+/* 取景常量统一放在 viewer-core.js，与主页面共用，这里不再各写一份。 */
 
 /* ---------- 参数 ----------
  * ?model=文件.spz      必填
@@ -106,6 +103,11 @@ const panPct  = parseVec2(qs.get('pan'), [0, 0]);
 
 const stageEl = document.getElementById('stage');
 
+/* 画面内平移：与主页面共用同一份实现，改这里等于两边一起改。
+   必须放在 stageEl 取到之后 —— 控制器要用它绑事件。 */
+let viewerRef = null;
+const pan = createPanController(stageEl, () => viewerRef);
+
 /* 链接里带底色就先用，闪一下白底的情况也就没有了 */
 if (bgHex) {
   document.documentElement.style.backgroundColor = bgHex;
@@ -120,103 +122,9 @@ function showMsg(text) {
   stageEl.appendChild(d);
 }
 
-/**
- * 把模型包围盒中心移到原点，最长边缩放到 FIT_SIZE，再按 yaw 补转。
- * 原始坐标偏移多少、尺度多大都能落进默认视野。
- * 注意：算包围盒前必须先把 scale/position/rotation 清零，
- * 否则第二次算用的是已缩放过的大小，结果等于「重置没反应」。
- */
-function fitMesh(mesh, yaw) {
-  if (!mesh) return false;
-  mesh.scale.setScalar(1);
-  mesh.position.set(0, 0, 0);
-  mesh.rotation.y = 0;
-  mesh.updateMatrixWorld(true);
 
-  let box;
-  try {
-    box = mesh.computeBoundingBox(true);
-  } catch (e) {
-    return false;
-  }
-  if (!box || box.isEmpty()) return false;
 
-  const c = box.getCenter(new THREE.Vector3());
-  const sz = box.getSize(new THREE.Vector3());
-  const maxDim = Math.max(sz.x, sz.y, sz.z);
-  if (!isFinite(maxDim) || maxDim <= 0) return false;
 
-  const s = FIT_SIZE / maxDim;
-  mesh.scale.setScalar(s);
-  mesh.position.set(-c.x * s, -c.y * s, -c.z * s);
-  mesh.rotation.y = yaw * Math.PI / 180;
-  mesh.updateMatrixWorld(true);
-  return true;
-}
-
-/* ---- 画面内平移（与主页面完全一致）----
-   接管右键 / Shift+左键，只改相机的「取景偏移」，相机位置和朝向都不动。
-   这样模型在画面里换位置，但旋转缩放始终绕模型自己转，
-   也不会出现挪动相机造成的透视变形。 */
-stageEl.addEventListener('contextmenu', e => e.preventDefault());
-
-let panX = 0, panY = 0;
-let _panning = false;
-let _panLast  = null;
-
-function applyViewOffset() {
-  const vr  = window.__splatViewer;
-  const cam = vr && vr.camera;
-  if (!cam || typeof cam.setViewOffset !== 'function') return;
-  const w = stageEl.clientWidth  || 1;
-  const h = stageEl.clientHeight || 1;
-
-  if (!panX && !panY) {
-    cam.clearViewOffset();
-  } else {
-    cam.setViewOffset(w, h, -panX, -panY, w, h);
-  }
-  if (typeof vr.forceRenderNextFrame === 'function') vr.forceRenderNextFrame();
-}
-
-function applyPan(dxPx, dyPx) {
-  const w = stageEl.clientWidth  || 1;
-  const h = stageEl.clientHeight || 1;
-  panX = Math.max(-w * 0.8, Math.min(w * 0.8, panX + dxPx));
-  panY = Math.max(-h * 0.8, Math.min(h * 0.8, panY + dyPx));
-  applyViewOffset();
-}
-
-stageEl.addEventListener('pointerdown', e => {
-  const isPan = (e.button === 2) || (e.button === 0 && e.shiftKey);
-  if (!isPan || !window.__splatViewer) return;
-  e.preventDefault();
-  e.stopPropagation();                  // 别让 canvas 自己再平移一遍
-  _panning = true;
-  _panLast = { x: e.clientX, y: e.clientY };
-  try { stageEl.setPointerCapture(e.pointerId); } catch (_) {}
-  stageEl.style.cursor = 'grabbing';
-}, true);
-
-stageEl.addEventListener('pointermove', e => {
-  if (!_panning) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const dx = e.clientX - _panLast.x;
-  const dy = e.clientY - _panLast.y;
-  _panLast = { x: e.clientX, y: e.clientY };
-  applyPan(dx, dy);
-}, true);
-
-function endPan(e) {
-  if (!_panning) return;
-  e.stopPropagation();
-  _panning = false;
-  _panLast = null;
-  stageEl.style.cursor = '';
-}
-stageEl.addEventListener('pointerup', endPan, true);
-stageEl.addEventListener('pointercancel', endPan, true);
 
 async function boot() {
   document.title = modelName;
@@ -230,17 +138,7 @@ async function boot() {
   stageEl.appendChild(host);
 
   try {
-    const viewer = new GaussianSplats3D.Viewer({
-      rootElement: host,
-      cameraUp: camUp,
-      initialCameraPosition: homePos,
-      initialCameraLookAt: [0, 0, 0],
-      sharedMemoryForWorkers: false,
-      gpuAcceleratedSort: false,
-      useBuiltInControls: true,
-      showLoadingUI: false,
-      antialiased: false,
-    });
+    const viewer = createViewer(host, { cameraUp: camUp, position: homePos });
 
     await viewer.addSplatScene(MODEL_BASE + encodeURIComponent(modelName), {
       splatAlphaRemovalThreshold: 5,
@@ -248,18 +146,13 @@ async function boot() {
     });
 
     viewer.start();
-    window.__splatCam    = viewer.camera;   // 供重设镜头偏移
-    window.__splatViewer = viewer;
+    viewerRef = viewer;
     fitMesh(viewer.getSplatMesh(), yawDeg);
 
-    // 还原主页面摆好的位置：URL 里是百分比，换算成当前屏幕的像素
-    if (panPct[0] || panPct[1]) {
-      panX = panPct[0] / 100 * (stageEl.clientWidth  || 1);
-      panY = panPct[1] / 100 * (stageEl.clientHeight || 1);
-    }
-    applyViewOffset();
+    // 还原主页面摆好的位置（URL 里是画面百分比）
+    pan.setFromPercent(panPct[0], panPct[1]);
     // 库在初始化/重排时会重算投影矩阵，补几次覆盖启动阶段的抖动
-    [80, 300, 800, 1500].forEach(ms => setTimeout(applyViewOffset, ms));
+    [80, 300, 800, 1500].forEach(ms => setTimeout(pan.apply, ms));
     spin.remove();
   } catch (e) {
     spin.remove();
@@ -279,7 +172,7 @@ if (!modelName) {
     let roTimer = null;
     new ResizeObserver(() => {
       clearTimeout(roTimer);
-      roTimer = setTimeout(applyViewOffset, 60);
+      roTimer = setTimeout(pan.apply, 60);
     }).observe(stageEl);
   }
 }
