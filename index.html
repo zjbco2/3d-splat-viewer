@@ -20,9 +20,10 @@
 
   /* 左侧列表 */
   aside{
-    width:290px; flex:none; background:var(--panel);
+    width:360px; flex:none; background:var(--panel);
     border-right:1px solid var(--line);
     display:flex; flex-direction:column;
+    position:relative; z-index:2;    /* 盖住画布，模型拖过来也不越界 */
   }
   .head{padding:14px 16px 10px; border-bottom:1px solid var(--line)}
   .head h1{margin:0; font-size:15px; font-weight:600; letter-spacing:.3px}
@@ -53,14 +54,13 @@
     background:repeating-linear-gradient(45deg,#252a33 0 8px,#2b313b 8px 16px);
   }
   .item .n{
-    font-size:11px; margin-top:5px; line-height:1.35;
+    font-size:13px; margin-top:6px; line-height:1.4;
     word-break:break-all; color:var(--text);
   }
   .item .tag{
     display:inline-block; font-size:9px; padding:0 4px; border-radius:3px;
     background:#2f3641; color:#9aa4b2; margin-left:4px; vertical-align:1px;
   }
-  .item .m{font-size:10px; color:var(--dim); margin-top:2px}
   .empty{padding:24px 16px; color:var(--dim); font-size:13px; line-height:1.7}
 
   /* 右侧 */
@@ -69,6 +69,7 @@
     min-height:44px; flex:none; display:flex; align-items:center;
     padding:6px 16px; gap:14px; border-bottom:1px solid var(--line);
     background:var(--panel); flex-wrap:wrap;
+    position:relative; z-index:2;    /* 同上，顶栏不被模型盖住 */
   }
   .bar .name{font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:38%}
   .ctl{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim)}
@@ -80,14 +81,35 @@
     background:var(--panel-2); color:var(--text); border:1px solid var(--line);
     border-radius:4px; padding:3px 6px; font-size:12px; cursor:pointer;
   }
-  .ctl button{
+  .ctl button, .bar .right button{
     background:var(--panel-2); color:var(--text); border:1px solid var(--line);
     border-radius:4px; padding:3px 9px; font-size:12px; cursor:pointer;
   }
-  .ctl button:hover{border-color:var(--accent); color:#fff}
-  .bar .status{font-size:12px; color:var(--dim); margin-left:auto; flex:none}
+  .ctl button:hover, .bar .right button:hover{border-color:var(--accent); color:#fff}
 
-  #stage{flex:1; position:relative; min-height:0; background:var(--stage-bg); transition:background-color .15s}
+  /* 右侧按钮组靠右对齐 */
+  .bar .right{display:flex; gap:8px; margin-left:auto; flex:none; align-items:center}
+
+  /* 状态文字不再显示；元素保留，避免各处赋值报错 */
+  .bar .status{display:none}
+
+  /* 折叠按钮 */
+  .btn-fold{
+    flex:none; width:28px; height:24px; padding:0;
+    background:var(--panel-2); color:var(--text);
+    border:1px solid var(--line); border-radius:4px;
+    font-size:13px; line-height:1; cursor:pointer;
+  }
+  .btn-fold:hover{border-color:var(--accent); color:#fff}
+  body.folded aside{display:none}
+
+  #stage{
+    flex:1; position:relative; min-height:0;
+    overflow:hidden;                 /* 拖动的渲染层不许溢出画布 */
+    background-color:var(--stage-bg);
+    background-size:cover; background-position:center; background-repeat:no-repeat;
+    transition:background-color .15s;
+  }
   #stage .host{position:absolute; inset:0}
   #stage .grid{
     position:absolute; inset:0; pointer-events:none; opacity:0; transition:opacity .15s;
@@ -142,6 +164,8 @@
 
 <main>
   <div class="bar">
+    <button class="btn-fold" id="fold" title="折叠左侧面板">☰</button>
+
     <div class="name" id="cur">—</div>
 
     <div class="ctl">
@@ -166,21 +190,24 @@
     </div>
 
     <div class="ctl">
-      <button id="autofit">重置视角</button>
+      <button id="wallpaper" title="上传一张图作为展示区背景（不保存，刷新即失效）">更换壁纸</button>
     </div>
-
-    <div class="ctl">
-      <button id="link" title="复制纯展示页直链：只有模型，白底无 UI">复制直链</button>
-    </div>
+    <input type="file" id="wallpaperFile" accept="image/*" hidden>
 
     <div class="status" id="status"></div>
+
+    <div class="right">
+      <button id="resetBg" title="清除壁纸，恢复纯底色">重置背景</button>
+      <button id="autofit">重置视角</button>
+      <button id="link" title="复制纯展示页直链：只有模型，白底无 UI">复制直链</button>
+    </div>
   </div>
 
   <div id="stage" class="grid-on">
     <div class="grid"></div>
     <div class="hint" id="hint">
       <b>从左边选一个模型</b><br>
-      左键拖动旋转 · 滚轮缩放 · 右键平移
+      左键旋转 · 滚轮缩放 · Shift+左键 或 右键 平移
     </div>
   </div>
 </main>
@@ -212,12 +239,6 @@ let viewer = null;
 let splatMesh = null;
 let current = null;
 let itemsCache = [];
-
-const fmtSize = (b) => b >= 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB';
-const fmtTime = (ts) => {
-  const d = new Date(ts*1000), p = n => String(n).padStart(2,'0');
-  return `${d.getMonth()+1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-};
 
 async function clearStage(){
   if (viewer) {
@@ -298,6 +319,7 @@ function resetCamera(){
 async function loadModel(item, el){
   if (current === item.name) return;
   current = item.name;
+  panX = 0; panY = 0;          // 换模型时位置偏移归零
 
   document.querySelectorAll('.item').forEach(x => x.classList.remove('on'));
   if (el) el.classList.add('on');
@@ -339,6 +361,7 @@ async function loadModel(item, el){
 
     splatMesh = viewer.getSplatMesh();
     const info = fitMesh(splatMesh);
+    applyViewOffset();          // 新相机要重新套上偏移
     applyYaw();
     statusEl.textContent = info
       ? `已加载 · 原始尺度 ${info.size.x.toFixed(1)}×${info.size.y.toFixed(1)}×${info.size.z.toFixed(1)}`
@@ -387,19 +410,17 @@ function renderList(items){
 
     const n = document.createElement('div');
     n.className = 'n';
-    n.textContent = it.name;
+    // 文件名不显示扩展名 —— 右边已经有类型标签了
+    n.textContent = it.name.replace(/\.[^.]+$/, '');
     const tag = document.createElement('span');
     tag.className = 'tag';
     tag.textContent = it.ext.toUpperCase();
     n.appendChild(tag);
 
-    const m = document.createElement('div');
-    m.className = 'm';
-    m.textContent = `${fmtSize(it.size)} · ${fmtTime(it.mtime)}`;
+    div.dataset.name = it.name;   // 用完整文件名定位，不依赖显示文本
 
     div.appendChild(img);
     div.appendChild(n);
-    div.appendChild(m);
     div.addEventListener('click', () => loadModel(it, div));
     if (it.name === current) div.classList.add('on');
     listEl.appendChild(div);
@@ -432,7 +453,7 @@ document.getElementById('reload').addEventListener('click', () => {
   if (!item) return;
   current = null;
   const el = [...document.querySelectorAll('.item')]
-    .find(x => x.querySelector('.n')?.textContent.startsWith(name));
+    .find(x => x.dataset.name === name);
   loadModel(item, el);
 });
 
@@ -453,6 +474,7 @@ autofitBtn.addEventListener('click', () => {
   }
   const info = fitMesh(splatMesh);
   applyYaw();
+  resetPan();                  // 画面偏移一起归零
   const camOk = resetCamera();
   if (info) {
     statusEl.textContent =
@@ -469,6 +491,155 @@ bgEl.addEventListener('input', () => {
 });
 stageEl.style.setProperty('--stage-bg', bgEl.value);
 
+/* ---- 壁纸：上传一张图铺在展示区背景 ----
+   只在内存里用 objectURL，不写任何存储，刷新页面就没了。
+   目的是方便「上传喜欢的壁纸 + 摆好模型」直接截图收藏。 */
+const wallBtn     = document.getElementById('wallpaper');
+const wallFile    = document.getElementById('wallpaperFile');
+const resetBgBtn  = document.getElementById('resetBg');
+let wallpaperURL  = null;
+
+function clearWallpaper() {
+  if (wallpaperURL) {
+    URL.revokeObjectURL(wallpaperURL);   // 释放，避免内存泄漏
+    wallpaperURL = null;
+  }
+  stageEl.style.backgroundImage = '';
+}
+
+wallBtn.addEventListener('click', () => wallFile.click());
+
+wallFile.addEventListener('change', () => {
+  const f = wallFile.files && wallFile.files[0];
+  if (!f) return;
+  clearWallpaper();
+  wallpaperURL = URL.createObjectURL(f);
+  stageEl.style.backgroundImage = `url("${wallpaperURL}")`;
+  wallFile.value = '';   // 清空，否则选同一张不会再触发 change
+});
+
+resetBgBtn.addEventListener('click', () => {
+  const had = !!wallpaperURL;
+  clearWallpaper();
+  resetBgBtn.textContent = had ? '已清除' : '没有壁纸';
+  clearTimeout(resetBgBtn._t);
+  resetBgBtn._t = setTimeout(() => { resetBgBtn.textContent = '重置背景'; }, 1200);
+});
+
+/* ---- 画面内平移 ----
+   控件库的旋转永远绕「画面中心那个点」转。所以平移如果去动相机，
+   模型就会绕着旁边那个空点画圈 —— 这正是之前的毛病。
+
+   做法：不移动相机、也不移动渲染层，只给相机设一个「取景偏移」
+   （camera.setViewOffset，相当于镜头平移，透视和朝向都不变）。
+   这样画面整体平移，模型看起来换了位置；
+   而相机和观察中心原地没动，旋转缩放仍然绕模型自己转；
+   画布也始终铺满可视区，不会出现「模型被画布边缘切成直角」的情况。 */
+stageEl.addEventListener('contextmenu', e => e.preventDefault());
+
+let panX = 0, panY = 0;
+let _panning = false;
+let _panLast  = null;
+
+function applyViewOffset() {
+  const cam = viewer && viewer.camera;
+  if (!cam || typeof cam.setViewOffset !== 'function') return;
+  const w = stageEl.clientWidth  || 1;
+  const h = stageEl.clientHeight || 1;
+
+  if (!panX && !panY) {
+    cam.clearViewOffset();                 // 内部会重算投影矩阵
+  } else {
+    // 取景框朝反方向挪，画面看起来就是往拖动方向走
+    cam.setViewOffset(w, h, -panX, -panY, w, h);
+  }
+  if (viewer && typeof viewer.forceRenderNextFrame === 'function') {
+    viewer.forceRenderNextFrame();
+  }
+}
+
+function resetPan() {
+  panX = 0; panY = 0;
+  applyViewOffset();
+}
+
+function applyPan(dxPx, dyPx) {
+  const w = stageEl.clientWidth  || 1;
+  const h = stageEl.clientHeight || 1;
+  // 留些余地，别让模型被拖出画面之后找不回来
+  panX = Math.max(-w * 0.8, Math.min(w * 0.8, panX + dxPx));
+  panY = Math.max(-h * 0.8, Math.min(h * 0.8, panY + dyPx));
+  applyViewOffset();
+}
+
+stageEl.addEventListener('pointerdown', e => {
+  const isPan = (e.button === 2) || (e.button === 0 && e.shiftKey);
+  if (!isPan || !viewer || !splatMesh) return;   // 还没选模型就不接管
+  e.preventDefault();
+  e.stopPropagation();                            // 别让 canvas 上的旋转同时生效
+  _panning = true;
+  _panLast = { x: e.clientX, y: e.clientY };
+  try { stageEl.setPointerCapture(e.pointerId); } catch (_) {}
+  stageEl.style.cursor = 'grabbing';
+}, true);                                         // ← 捕获阶段，抢在 canvas 前面
+
+stageEl.addEventListener('pointermove', e => {
+  if (!_panning) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const dx = e.clientX - _panLast.x;
+  const dy = e.clientY - _panLast.y;
+  _panLast = { x: e.clientX, y: e.clientY };
+  applyPan(dx, dy);
+}, true);
+
+function endPan(e) {
+  if (!_panning) return;
+  e.stopPropagation();
+  _panning = false;
+  _panLast = null;
+  stageEl.style.cursor = '';
+}
+stageEl.addEventListener('pointerup', endPan, true);
+stageEl.addEventListener('pointercancel', endPan, true);
+
+/* ---- 折叠左侧面板 ---- */
+const foldBtn = document.getElementById('fold');
+foldBtn.addEventListener('click', () => {
+  const folded = document.body.classList.toggle('folded');
+  foldBtn.textContent = folded ? '\u00bb' : '\u2630';
+  foldBtn.title = folded ? '展开左侧面板' : '折叠左侧面板';
+});
+
+/**
+ * 把当前外观与视角打包成查询参数，交给 view.html 还原。
+ * 不传壁纸（本地文件无法塞进 URL）、不传网格（展示页始终无网格）。
+ * 旋转角度和缩放不用单独传：它们已经包含在相机位置里。
+ */
+function buildShareQuery() {
+  const q = new URLSearchParams();
+  q.set('model', current);
+  q.set('bg', bgEl.value.replace('#', ''));
+  q.set('up', upEl.value);
+
+  const cam = viewer && viewer.camera;
+  if (cam && cam.position) {
+    const f = v => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.round(n * 1000) / 1000 : 0;
+    };
+    q.set('cam', [f(cam.position.x), f(cam.position.y), f(cam.position.z)].join(','));
+  }
+
+  // 画面偏移按「占画面宽高的百分比」传，换屏幕尺寸也能对上
+  if (panX || panY) {
+    const w = stageEl.clientWidth  || 1;
+    const h = stageEl.clientHeight || 1;
+    q.set('pan', `${(panX / w * 100).toFixed(1)},${(panY / h * 100).toFixed(1)}`);
+  }
+  return q;
+}
+
 /* 复制纯展示页（view.html）的直链，方便分享单个模型。 */
 const linkBtn = document.getElementById('link');
 const LINK_LABEL = '复制直链';
@@ -481,7 +652,7 @@ linkBtn.addEventListener('click', async () => {
     linkBtn._t = setTimeout(() => { linkBtn.textContent = LINK_LABEL; }, 1400);
     return;
   }
-  const url = new URL('view.html?model=' + encodeURIComponent(current), location.href).href;
+  const url = new URL('view.html?' + buildShareQuery().toString(), location.href).href;
   let ok = false;
   try {
     await navigator.clipboard.writeText(url);
@@ -507,9 +678,18 @@ upEl.addEventListener('change', () => {
   if (!item) return;
   current = null;
   const el = [...document.querySelectorAll('.item')]
-    .find(x => x.querySelector('.n')?.textContent.startsWith(name));
+    .find(x => x.dataset.name === name);
   loadModel(item, el);
 });
+
+/* 容器尺寸一变，库会重算投影矩阵、把 viewOffset 冲掉，这里补回来 */
+if (window.ResizeObserver) {
+  let _roTimer = null;
+  new ResizeObserver(() => {
+    clearTimeout(_roTimer);
+    _roTimer = setTimeout(applyViewOffset, 60);
+  }).observe(stageEl);
+}
 
 scan();
 </script>

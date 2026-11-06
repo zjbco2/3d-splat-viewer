@@ -193,7 +193,6 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/index.json":
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
         if path.startswith("/models/"):
@@ -209,12 +208,21 @@ class Handler(SimpleHTTPRequestHandler):
             return
         super().do_HEAD()
 
+    def end_headers(self):
+        """本地开发用：页面和清单一律不缓存，避免「改了看不到」。
+        模型文件（/models/）不加，它们体积大且不会变，让浏览器缓存反而快。"""
+        path = unquote(urlparse(self.path).path)
+        if not path.startswith("/models/"):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        super().end_headers()
+
     def _send_json(self, obj):
         body = json.dumps(obj, ensure_ascii=False, indent=1).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

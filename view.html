@@ -12,6 +12,7 @@
   }
   #stage {
     position: absolute; inset: 0;
+    overflow: hidden;               /* 位置偏移后不许溢出画面 */
     background: #ffffff;
   }
   #stage .host {
@@ -74,13 +75,43 @@ const HOME_POS = [7, -2.5, 0];
  * ?yaw=90              可选，绕 Y 轴补转角度（默认 0）
  * ?up=0,-1,0           可选，相机上方向（默认 Y 向下，3DGS 常规）
  *                       个别模型朝向不对时可试 0,0,1 或 0,1,0
+ * ?bg=ffffff           可选，底色（6 位十六进制，不带 #）
+ * ?cam=x,y,z           可选，相机位置（决定旋转角度和缩放）
+ * ?pan=12,-8           可选，画面偏移，按画面的百分比（正右、正下为正）
+ *
+ * 壁纸和网格不从链接传 —— 壁纸是本地文件塞不进 URL，展示页始终无网格。
  */
 const qs = new URLSearchParams(location.search);
 const modelName = (qs.get('model') || '').trim();
 const yawDeg = Number.isFinite(parseFloat(qs.get('yaw'))) ? parseFloat(qs.get('yaw')) : 0;
 const camUp = (qs.get('up') || '0,-1,0').split(',').map(Number);
 
+/* 三坐标解析：格式不对就退回默认值，不让坏参数把页面搞崩 */
+function parseVec3(s, fallback) {
+  if (!s) return fallback;
+  const a = s.split(',').map(Number);
+  return (a.length === 3 && a.every(Number.isFinite)) ? a : fallback;
+}
+
+/* 两坐标（百分比）解析，用于画面偏移 */
+function parseVec2(s, fallback) {
+  if (!s) return fallback;
+  const a = s.split(',').map(Number);
+  return (a.length === 2 && a.every(Number.isFinite)) ? a : fallback;
+}
+
+const bgHex   = /^[0-9a-fA-F]{6}$/.test(qs.get('bg') || '') ? '#' + qs.get('bg') : null;
+const homePos = parseVec3(qs.get('cam'), HOME_POS);
+const panPct  = parseVec2(qs.get('pan'), [0, 0]);
+
 const stageEl = document.getElementById('stage');
+
+/* 链接里带底色就先用，闪一下白底的情况也就没有了 */
+if (bgHex) {
+  document.documentElement.style.backgroundColor = bgHex;
+  document.body.style.backgroundColor = bgHex;
+  stageEl.style.backgroundColor = bgHex;
+}
 
 function showMsg(text) {
   const d = document.createElement('div');
@@ -123,6 +154,70 @@ function fitMesh(mesh, yaw) {
   return true;
 }
 
+/* ---- 画面内平移（与主页面完全一致）----
+   接管右键 / Shift+左键，只改相机的「取景偏移」，相机位置和朝向都不动。
+   这样模型在画面里换位置，但旋转缩放始终绕模型自己转，
+   也不会出现挪动相机造成的透视变形。 */
+stageEl.addEventListener('contextmenu', e => e.preventDefault());
+
+let panX = 0, panY = 0;
+let _panning = false;
+let _panLast  = null;
+
+function applyViewOffset() {
+  const vr  = window.__splatViewer;
+  const cam = vr && vr.camera;
+  if (!cam || typeof cam.setViewOffset !== 'function') return;
+  const w = stageEl.clientWidth  || 1;
+  const h = stageEl.clientHeight || 1;
+
+  if (!panX && !panY) {
+    cam.clearViewOffset();
+  } else {
+    cam.setViewOffset(w, h, -panX, -panY, w, h);
+  }
+  if (typeof vr.forceRenderNextFrame === 'function') vr.forceRenderNextFrame();
+}
+
+function applyPan(dxPx, dyPx) {
+  const w = stageEl.clientWidth  || 1;
+  const h = stageEl.clientHeight || 1;
+  panX = Math.max(-w * 0.8, Math.min(w * 0.8, panX + dxPx));
+  panY = Math.max(-h * 0.8, Math.min(h * 0.8, panY + dyPx));
+  applyViewOffset();
+}
+
+stageEl.addEventListener('pointerdown', e => {
+  const isPan = (e.button === 2) || (e.button === 0 && e.shiftKey);
+  if (!isPan || !window.__splatViewer) return;
+  e.preventDefault();
+  e.stopPropagation();                  // 别让 canvas 自己再平移一遍
+  _panning = true;
+  _panLast = { x: e.clientX, y: e.clientY };
+  try { stageEl.setPointerCapture(e.pointerId); } catch (_) {}
+  stageEl.style.cursor = 'grabbing';
+}, true);
+
+stageEl.addEventListener('pointermove', e => {
+  if (!_panning) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const dx = e.clientX - _panLast.x;
+  const dy = e.clientY - _panLast.y;
+  _panLast = { x: e.clientX, y: e.clientY };
+  applyPan(dx, dy);
+}, true);
+
+function endPan(e) {
+  if (!_panning) return;
+  e.stopPropagation();
+  _panning = false;
+  _panLast = null;
+  stageEl.style.cursor = '';
+}
+stageEl.addEventListener('pointerup', endPan, true);
+stageEl.addEventListener('pointercancel', endPan, true);
+
 async function boot() {
   document.title = modelName;
 
@@ -138,7 +233,7 @@ async function boot() {
     const viewer = new GaussianSplats3D.Viewer({
       rootElement: host,
       cameraUp: camUp,
-      initialCameraPosition: HOME_POS,
+      initialCameraPosition: homePos,
       initialCameraLookAt: [0, 0, 0],
       sharedMemoryForWorkers: false,
       gpuAcceleratedSort: false,
@@ -153,7 +248,18 @@ async function boot() {
     });
 
     viewer.start();
+    window.__splatCam    = viewer.camera;   // 供重设镜头偏移
+    window.__splatViewer = viewer;
     fitMesh(viewer.getSplatMesh(), yawDeg);
+
+    // 还原主页面摆好的位置：URL 里是百分比，换算成当前屏幕的像素
+    if (panPct[0] || panPct[1]) {
+      panX = panPct[0] / 100 * (stageEl.clientWidth  || 1);
+      panY = panPct[1] / 100 * (stageEl.clientHeight || 1);
+    }
+    applyViewOffset();
+    // 库在初始化/重排时会重算投影矩阵，补几次覆盖启动阶段的抖动
+    [80, 300, 800, 1500].forEach(ms => setTimeout(applyViewOffset, ms));
     spin.remove();
   } catch (e) {
     spin.remove();
@@ -167,6 +273,15 @@ if (!modelName) {
   showMsg('缺少参数。用法：view.html?model=文件名.spz');
 } else {
   boot();
+
+  // 尺寸变化会让库重算投影矩阵、冲掉镜头偏移，这里补回来
+  if (window.ResizeObserver) {
+    let roTimer = null;
+    new ResizeObserver(() => {
+      clearTimeout(roTimer);
+      roTimer = setTimeout(applyViewOffset, 60);
+    }).observe(stageEl);
+  }
 }
 </script>
 </body>
