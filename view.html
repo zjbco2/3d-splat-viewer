@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>splat-viewer</title>
+<style>
+  /* 纯展示页：整页只有模型本身。白底、无网格、无任何常驻 UI。 */
+  html, body {
+    height: 100%; margin: 0; overflow: hidden;
+    background: #ffffff;
+  }
+  #stage {
+    position: absolute; inset: 0;
+    background: #ffffff;
+  }
+  #stage .host {
+    position: absolute; inset: 0;
+  }
+
+  /* 加载中给一个极淡的细环 —— 加载完立刻移除，最终状态是干干净净一张白底 */
+  .spinner {
+    position: absolute; left: 50%; top: 50%;
+    width: 26px; height: 26px; margin: -13px 0 0 -13px;
+    border: 2px solid rgba(0, 0, 0, .06);
+    border-top-color: rgba(0, 0, 0, .22);
+    border-radius: 50%;
+    animation: spin .9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 只有出错时才出现，正常看模型时页面上不该有任何文字 */
+  .msg {
+    position: absolute; left: 50%; bottom: 28px;
+    transform: translateX(-50%);
+    max-width: min(80vw, 720px);
+    font: 12px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #9aa0a6; text-align: center; word-break: break-all;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="stage"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+
+/* ============================================================
+ * 模型地址
+ * 用相对路径，本地 serve.py 与将来的静态托管（git / Pages）都能直接用。
+ * 若模型放在别的层级，只改这一行即可。
+ * ============================================================ */
+const MODEL_BASE = 'models/';
+
+/* 与 index.html 保持一致的取景常量。
+   两个页面必须用同一套值，否则同一个模型在两处看起来大小、角度会不一样。
+   改 FIT_SIZE 就得同步改 HOME_POS 的距离。 */
+const FIT_SIZE = 4.2;
+const HOME_POS = [7, -2.5, 0];
+
+/* ---------- 参数 ----------
+ * ?model=文件.spz      必填
+ * ?yaw=90              可选，绕 Y 轴补转角度（默认 0）
+ * ?up=0,-1,0           可选，相机上方向（默认 Y 向下，3DGS 常规）
+ *                       个别模型朝向不对时可试 0,0,1 或 0,1,0
+ */
+const qs = new URLSearchParams(location.search);
+const modelName = (qs.get('model') || '').trim();
+const yawDeg = Number.isFinite(parseFloat(qs.get('yaw'))) ? parseFloat(qs.get('yaw')) : 0;
+const camUp = (qs.get('up') || '0,-1,0').split(',').map(Number);
+
+const stageEl = document.getElementById('stage');
+
+function showMsg(text) {
+  const d = document.createElement('div');
+  d.className = 'msg';
+  d.textContent = text;
+  stageEl.appendChild(d);
+}
+
+/**
+ * 把模型包围盒中心移到原点，最长边缩放到 FIT_SIZE，再按 yaw 补转。
+ * 原始坐标偏移多少、尺度多大都能落进默认视野。
+ * 注意：算包围盒前必须先把 scale/position/rotation 清零，
+ * 否则第二次算用的是已缩放过的大小，结果等于「重置没反应」。
+ */
+function fitMesh(mesh, yaw) {
+  if (!mesh) return false;
+  mesh.scale.setScalar(1);
+  mesh.position.set(0, 0, 0);
+  mesh.rotation.y = 0;
+  mesh.updateMatrixWorld(true);
+
+  let box;
+  try {
+    box = mesh.computeBoundingBox(true);
+  } catch (e) {
+    return false;
+  }
+  if (!box || box.isEmpty()) return false;
+
+  const c = box.getCenter(new THREE.Vector3());
+  const sz = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(sz.x, sz.y, sz.z);
+  if (!isFinite(maxDim) || maxDim <= 0) return false;
+
+  const s = FIT_SIZE / maxDim;
+  mesh.scale.setScalar(s);
+  mesh.position.set(-c.x * s, -c.y * s, -c.z * s);
+  mesh.rotation.y = yaw * Math.PI / 180;
+  mesh.updateMatrixWorld(true);
+  return true;
+}
+
+async function boot() {
+  document.title = modelName;
+
+  const spin = document.createElement('div');
+  spin.className = 'spinner';
+  stageEl.appendChild(spin);
+
+  const host = document.createElement('div');
+  host.className = 'host';
+  stageEl.appendChild(host);
+
+  try {
+    const viewer = new GaussianSplats3D.Viewer({
+      rootElement: host,
+      cameraUp: camUp,
+      initialCameraPosition: HOME_POS,
+      initialCameraLookAt: [0, 0, 0],
+      sharedMemoryForWorkers: false,
+      gpuAcceleratedSort: false,
+      useBuiltInControls: true,
+      showLoadingUI: false,
+      antialiased: false,
+    });
+
+    await viewer.addSplatScene(MODEL_BASE + encodeURIComponent(modelName), {
+      splatAlphaRemovalThreshold: 5,
+      showLoadingUI: false,
+    });
+
+    viewer.start();
+    fitMesh(viewer.getSplatMesh(), yawDeg);
+    spin.remove();
+  } catch (e) {
+    spin.remove();
+    console.error('[splat-viewer] 加载失败', e);
+    const m = String((e && e.message) || e);
+    showMsg('加载失败：' + m + ' ｜ 检查文件名是否带扩展名、路径是否为 ' + MODEL_BASE + modelName);
+  }
+}
+
+if (!modelName) {
+  showMsg('缺少参数。用法：view.html?model=文件名.spz');
+} else {
+  boot();
+}
+</script>
+</body>
+</html>

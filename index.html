@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>splat-viewer</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1c1f25; --panel-2:#232730;
+    --line:#2e333d; --text:#e6e9ef; --dim:#8d95a3; --accent:#4a9eff;
+    --stage-bg:#ffffff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font:14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    display:flex; overflow:hidden;
+  }
+
+  /* 左侧列表 */
+  aside{
+    width:290px; flex:none; background:var(--panel);
+    border-right:1px solid var(--line);
+    display:flex; flex-direction:column;
+  }
+  .head{padding:14px 16px 10px; border-bottom:1px solid var(--line)}
+  .head h1{margin:0; font-size:15px; font-weight:600; letter-spacing:.3px}
+  .head .sub{margin-top:3px; font-size:12px; color:var(--dim)}
+  .tools{display:flex; gap:8px; margin-top:10px}
+  .tools button{
+    flex:1; background:var(--panel-2); color:var(--text);
+    border:1px solid var(--line); border-radius:6px;
+    padding:5px 8px; font-size:12px; cursor:pointer;
+  }
+  .tools button:hover{border-color:var(--accent); color:#fff}
+  .list{
+    flex:1; overflow-y:auto; padding:10px;
+    display:grid; grid-template-columns:1fr 1fr; gap:10px; align-content:start;
+  }
+  .item{
+    padding:6px; border-radius:8px; cursor:pointer;
+    border:1px solid transparent; background:var(--panel-2);
+    transition:border-color .15s, background .15s;
+  }
+  .item:hover{border-color:#3a4150}
+  .item.on{border-color:var(--accent); background:rgba(74,158,255,.12)}
+  .item .thumb{
+    width:100%; aspect-ratio:1/1; object-fit:cover; display:block;
+    border-radius:5px; background:#e9ecf1;
+  }
+  .item .thumb.blank{
+    background:repeating-linear-gradient(45deg,#252a33 0 8px,#2b313b 8px 16px);
+  }
+  .item .n{
+    font-size:11px; margin-top:5px; line-height:1.35;
+    word-break:break-all; color:var(--text);
+  }
+  .item .tag{
+    display:inline-block; font-size:9px; padding:0 4px; border-radius:3px;
+    background:#2f3641; color:#9aa4b2; margin-left:4px; vertical-align:1px;
+  }
+  .item .m{font-size:10px; color:var(--dim); margin-top:2px}
+  .empty{padding:24px 16px; color:var(--dim); font-size:13px; line-height:1.7}
+
+  /* 右侧 */
+  main{flex:1; display:flex; flex-direction:column; min-width:0}
+  .bar{
+    min-height:44px; flex:none; display:flex; align-items:center;
+    padding:6px 16px; gap:14px; border-bottom:1px solid var(--line);
+    background:var(--panel); flex-wrap:wrap;
+  }
+  .bar .name{font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:38%}
+  .ctl{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim)}
+  .ctl input[type=color]{
+    width:26px; height:22px; padding:0; border:1px solid var(--line);
+    border-radius:4px; background:none; cursor:pointer;
+  }
+  .ctl select{
+    background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+    border-radius:4px; padding:3px 6px; font-size:12px; cursor:pointer;
+  }
+  .ctl button{
+    background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+    border-radius:4px; padding:3px 9px; font-size:12px; cursor:pointer;
+  }
+  .ctl button:hover{border-color:var(--accent); color:#fff}
+  .bar .status{font-size:12px; color:var(--dim); margin-left:auto; flex:none}
+
+  #stage{flex:1; position:relative; min-height:0; background:var(--stage-bg); transition:background-color .15s}
+  #stage .host{position:absolute; inset:0}
+  #stage .grid{
+    position:absolute; inset:0; pointer-events:none; opacity:0; transition:opacity .15s;
+    background-image:
+      linear-gradient(to right, rgba(0,0,0,.07) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(0,0,0,.07) 1px, transparent 1px);
+    background-size:48px 48px;
+    background-position:center center;
+  }
+  #stage.grid-on .grid{opacity:1}
+  .hint{
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    text-align:center; color:var(--dim); font-size:13px; line-height:1.9;
+    pointer-events:none;
+  }
+  .hint b{color:var(--text); font-weight:600}
+  .spinner{
+    position:absolute; left:50%; top:50%; width:28px; height:28px; margin:-14px 0 0 -14px;
+    border:2px solid rgba(255,255,255,.15); border-top-color:var(--accent);
+    border-radius:50%; animation:spin .8s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .err{
+    position:absolute; left:16px; right:16px; bottom:16px;
+    background:#3a1f22; border:1px solid #6a2f36; color:#ffb4bc;
+    padding:10px 12px; border-radius:6px; font-size:12px; line-height:1.6;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+  }
+}
+</script>
+</head>
+<body>
+
+<aside>
+  <div class="head">
+    <h1>3D 高斯点云</h1>
+    <div class="sub" id="count">正在扫描…</div>
+    <div class="tools">
+      <button id="refresh">重新扫描</button>
+      <button id="reload">重新加载</button>
+    </div>
+  </div>
+  <div class="list" id="list"></div>
+</aside>
+
+<main>
+  <div class="bar">
+    <div class="name" id="cur">—</div>
+
+    <div class="ctl">
+      <span>底色</span>
+      <input type="color" id="bg" value="#ffffff">
+    </div>
+
+    <div class="ctl">
+      <span>上方向</span>
+      <select id="up">
+        <option value="0,-1,0" selected>Y 向下（3DGS 常规）</option>
+        <option value="0,1,0">Y 向上</option>
+        <option value="0,0,1">Z 向上</option>
+        <option value="0,-1,-0.6">Y 向下 · 俯视 31°</option>
+      </select>
+    </div>
+
+    <div class="ctl">
+      <label style="cursor:pointer;display:flex;align-items:center;gap:5px">
+        <input type="checkbox" id="grid" checked> 网格
+      </label>
+    </div>
+
+    <div class="ctl">
+      <button id="autofit">重置视角</button>
+    </div>
+
+    <div class="ctl">
+      <button id="link" title="复制纯展示页直链：只有模型，白底无 UI">复制直链</button>
+    </div>
+
+    <div class="status" id="status"></div>
+  </div>
+
+  <div id="stage" class="grid-on">
+    <div class="grid"></div>
+    <div class="hint" id="hint">
+      <b>从左边选一个模型</b><br>
+      左键拖动旋转 · 滚轮缩放 · 右键平移
+    </div>
+  </div>
+</main>
+
+<script type="module">
+import * as THREE from 'three';
+import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+
+const listEl   = document.getElementById('list');
+const stageEl  = document.getElementById('stage');
+const countEl  = document.getElementById('count');
+const curEl    = document.getElementById('cur');
+const statusEl = document.getElementById('status');
+const hintEl   = document.getElementById('hint');
+const bgEl     = document.getElementById('bg');
+const upEl     = document.getElementById('up');
+const gridEl   = document.getElementById('grid');
+
+/* Idol 出的 ply 已在工作流里用 Transform Splat 绕 Y 轴 -90° 校正过，
+   这里保持 0 即可。若哪天工作流去掉了那个节点，把这里改回 -90。 */
+/* 模型归一化后的目标直径，以及配套的工作相机位置。
+   两个值要一起看：改 FIT_SIZE 就得改 HOME_POS 的距离，否则画面大小会跳。 */
+const YAW_DEG  = 0;
+const FIT_SIZE = 4.2;
+const HOME_POS = [7, -2.5, 0];
+const HOME_UP  = [0, -1, 0];
+
+let viewer = null;
+let splatMesh = null;
+let current = null;
+let itemsCache = [];
+
+const fmtSize = (b) => b >= 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB';
+const fmtTime = (ts) => {
+  const d = new Date(ts*1000), p = n => String(n).padStart(2,'0');
+  return `${d.getMonth()+1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
+async function clearStage(){
+  if (viewer) {
+    const v = viewer;
+    viewer = null; splatMesh = null;
+    try { await v.dispose(); } catch(e){}
+  }
+  stageEl.querySelectorAll('.host').forEach(n => n.remove());
+  stageEl.querySelectorAll('.err').forEach(n => n.remove());
+}
+
+/**
+ * 把模型包围盒中心移到原点，并把最长边缩放到 6 个单位。
+ * 这样不管原始坐标偏移多少、尺度多大，都能落在默认视野内。
+ */
+function fitMesh(mesh){
+  if (!mesh) return null;
+  // 先清零变换，否则第二次计算包围盒时用的是已经缩放过的大小，
+  // 会把 scale 重新设成接近 1，效果等于“没反应”甚至突然变大。
+  const keepY = mesh.rotation.y;
+  mesh.scale.setScalar(1);
+  mesh.position.set(0, 0, 0);
+  mesh.rotation.y = 0;
+  mesh.updateMatrixWorld(true);
+
+  let box;
+  try { box = mesh.computeBoundingBox(true); } catch(e){
+    mesh.rotation.y = keepY; return null;
+  }
+  if (!box || box.isEmpty()) { mesh.rotation.y = keepY; return null; }
+
+  const c  = box.getCenter(new THREE.Vector3());
+  const sz = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(sz.x, sz.y, sz.z);
+  if (!isFinite(maxDim) || maxDim <= 0) { mesh.rotation.y = keepY; return null; }
+
+  const s = FIT_SIZE / maxDim;
+  mesh.scale.setScalar(s);
+  mesh.position.set(-c.x * s, -c.y * s, -c.z * s);
+  mesh.rotation.y = keepY;
+  mesh.updateMatrixWorld(true);
+  return { center: c, size: sz, scale: s };
+}
+
+function applyYaw(){
+  if (!splatMesh) return;
+  splatMesh.rotation.y = YAW_DEG * Math.PI / 180;
+  splatMesh.updateMatrixWorld(true);
+}
+
+/**
+ * 把相机拉回默认机位，让画面回到"正对模型、大小合适"的状态。
+ * 这个库没有公开的相机接口，只能直接改它内部的 camera / controls；
+ * 拿不到就返回 false，不抛错打断主流程。
+ */
+function resetCamera(){
+  if (!viewer) return false;
+  try {
+    const cam = viewer.camera;
+    const ctl = viewer.controls;
+    if (!cam || !cam.position) return false;
+    const up = upEl.value.split(',').map(Number);
+    cam.position.set(HOME_POS[0], HOME_POS[1], HOME_POS[2]);
+    cam.up.set(up[0], up[1], up[2]);
+    if (ctl && ctl.target) {
+      ctl.target.set(0, 0, 0);
+      if (typeof ctl.update === 'function') ctl.update();
+    }
+    if (typeof cam.lookAt === 'function') cam.lookAt(0, 0, 0);
+    if (typeof cam.updateProjectionMatrix === 'function') cam.updateProjectionMatrix();
+    return true;
+  } catch (e) {
+    console.warn('[splat-viewer] resetCamera 失败', e);
+    return false;
+  }
+}
+
+async function loadModel(item, el){
+  if (current === item.name) return;
+  current = item.name;
+
+  document.querySelectorAll('.item').forEach(x => x.classList.remove('on'));
+  if (el) el.classList.add('on');
+
+  curEl.textContent = item.name;
+  statusEl.textContent = '加载中…';
+  await clearStage();
+  if (hintEl) hintEl.remove();
+
+  const spin = document.createElement('div');
+  spin.className = 'spinner';
+  stageEl.appendChild(spin);
+
+  const host = document.createElement('div');
+  host.className = 'host';
+  stageEl.appendChild(host);
+
+  try {
+    viewer = new GaussianSplats3D.Viewer({
+      rootElement: host,
+      cameraUp: upEl.value.split(',').map(Number),
+      // ComfyUI 的 Save Splat 视口相机在 +X 侧，跟着它走，两边看到的是同一个正面
+      initialCameraPosition: HOME_POS,
+      initialCameraLookAt: [0, 0, 0],
+      sharedMemoryForWorkers: false,
+      gpuAcceleratedSort: false,
+      useBuiltInControls: true,
+      showLoadingUI: false,
+      antialiased: false,
+    });
+
+    await viewer.addSplatScene('models/' + encodeURIComponent(item.name), {
+      splatAlphaRemovalThreshold: 5,
+      showLoadingUI: false,
+    });
+
+    viewer.start();
+    spin.remove();
+
+    splatMesh = viewer.getSplatMesh();
+    const info = fitMesh(splatMesh);
+    applyYaw();
+    statusEl.textContent = info
+      ? `已加载 · 原始尺度 ${info.size.x.toFixed(1)}×${info.size.y.toFixed(1)}×${info.size.z.toFixed(1)}`
+      : '已加载（包围盒为空，未能自动适配）';
+
+  } catch (err) {
+    console.error(err);
+    spin.remove();
+    statusEl.textContent = '失败';
+    const m = String(err && err.message || err);
+    const d = document.createElement('div');
+    d.className = 'err';
+    d.textContent = '加载失败：' + m + '（按 F12 看 Console）';
+    stageEl.appendChild(d);
+    current = null;
+  }
+}
+
+function renderList(items){
+  itemsCache = items;
+  listEl.innerHTML = '';
+  countEl.textContent = `共 ${items.length} 个模型`;
+
+  if (!items.length) {
+    const d = document.createElement('div');
+    d.className = 'empty';
+    d.innerHTML = '模型目录里还没有文件。<br>跑一次图生 3D 后点「重新扫描」。';
+    listEl.appendChild(d);
+    return;
+  }
+
+  for (const it of items){
+    const div = document.createElement('div');
+    div.className = 'item';
+
+    const img = document.createElement('img');
+    img.className = 'thumb';
+    img.alt = '';
+    img.loading = 'lazy';
+    if (it.thumb) {
+      img.src = 'models/' + encodeURIComponent(it.thumb);
+      img.addEventListener('error', () => { img.classList.add('blank'); img.removeAttribute('src'); });
+    } else {
+      img.classList.add('blank');
+    }
+
+    const n = document.createElement('div');
+    n.className = 'n';
+    n.textContent = it.name;
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = it.ext.toUpperCase();
+    n.appendChild(tag);
+
+    const m = document.createElement('div');
+    m.className = 'm';
+    m.textContent = `${fmtSize(it.size)} · ${fmtTime(it.mtime)}`;
+
+    div.appendChild(img);
+    div.appendChild(n);
+    div.appendChild(m);
+    div.addEventListener('click', () => loadModel(it, div));
+    if (it.name === current) div.classList.add('on');
+    listEl.appendChild(div);
+  }
+}
+
+async function scan(){
+  countEl.textContent = '正在扫描…';
+  try {
+    const r = await fetch('index.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    renderList(await r.json());
+  } catch (err) {
+    countEl.textContent = '扫描失败';
+    listEl.innerHTML = '';
+    const d = document.createElement('div');
+    d.className = 'empty';
+    d.textContent = '读不到 /index.json：' + err.message;
+    listEl.appendChild(d);
+  }
+}
+
+/* ---- 交互 ---- */
+document.getElementById('refresh').addEventListener('click', scan);
+
+document.getElementById('reload').addEventListener('click', () => {
+  if (!current) return;
+  const name = current;
+  const item = itemsCache.find(x => x.name === name);
+  if (!item) return;
+  current = null;
+  const el = [...document.querySelectorAll('.item')]
+    .find(x => x.querySelector('.n')?.textContent.startsWith(name));
+  loadModel(item, el);
+});
+
+const autofitBtn = document.getElementById('autofit');
+const AUTOFIT_LABEL = '重置视角';
+
+function flashBtn(text){
+  autofitBtn.textContent = text;
+  clearTimeout(flashBtn._t);
+  flashBtn._t = setTimeout(() => { autofitBtn.textContent = AUTOFIT_LABEL; }, 1400);
+}
+
+autofitBtn.addEventListener('click', () => {
+  if (!splatMesh) {
+    statusEl.textContent = '先选一个模型';
+    flashBtn('先选模型');
+    return;
+  }
+  const info = fitMesh(splatMesh);
+  applyYaw();
+  const camOk = resetCamera();
+  if (info) {
+    statusEl.textContent =
+      `视角已复位 · 模型直径 ${FIT_SIZE}`;
+    flashBtn(camOk ? '✓ 已复位' : '模型已归位·视角未复位');
+  } else {
+    statusEl.textContent = '包围盒为空，无法复位';
+    flashBtn('复位失败');
+  }
+});
+
+bgEl.addEventListener('input', () => {
+  stageEl.style.setProperty('--stage-bg', bgEl.value);
+});
+stageEl.style.setProperty('--stage-bg', bgEl.value);
+
+/* 复制纯展示页（view.html）的直链，方便分享单个模型。 */
+const linkBtn = document.getElementById('link');
+const LINK_LABEL = '复制直链';
+
+linkBtn.addEventListener('click', async () => {
+  if (!current) {
+    statusEl.textContent = '先选一个模型';
+    linkBtn.textContent = '先选模型';
+    clearTimeout(linkBtn._t);
+    linkBtn._t = setTimeout(() => { linkBtn.textContent = LINK_LABEL; }, 1400);
+    return;
+  }
+  const url = new URL('view.html?model=' + encodeURIComponent(current), location.href).href;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(url);
+    ok = true;
+  } catch (e) {
+    // 非 https 或浏览器拒绝时退化为手动复制
+    window.prompt('复制这个链接：', url);
+  }
+  linkBtn.textContent = ok ? '✓ 已复制' : '已弹出';
+  statusEl.textContent = url;
+  clearTimeout(linkBtn._t);
+  linkBtn._t = setTimeout(() => { linkBtn.textContent = LINK_LABEL; }, 1600);
+});
+
+gridEl.addEventListener('change', () => {
+  stageEl.classList.toggle('grid-on', gridEl.checked);
+});
+
+upEl.addEventListener('change', () => {
+  if (!current) return;
+  const name = current;
+  const item = itemsCache.find(x => x.name === name);
+  if (!item) return;
+  current = null;
+  const el = [...document.querySelectorAll('.item')]
+    .find(x => x.querySelector('.n')?.textContent.startsWith(name));
+  loadModel(item, el);
+});
+
+scan();
+</script>
+</body>
+</html>
